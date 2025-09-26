@@ -1,1 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Discord Gift Sender</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 24px; max-width: 720px; }
+    button, input { font-size: 1rem; padding: 8px 12px; margin: 6px 0; }
+    #output { margin-top: 12px; font-weight: 600; word-break: break-all; }
+    .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    label { display:flex; gap:8px; align-items:center; }
+    .small { font-size:0.9rem; color:#555; }
+  </style>
+</head>
+<body>
+  <h2>Generate random 18-character code and send to Discord webhook</h2>
+  <div class="controls">
+    <button id="generateBtn">Generate & Send</button>
+    <button id="copyBtn">Copy Last</button>
+    <label>
+      <input type="checkbox" id="autoSendToggle" />
+      Auto-send every
+    </label>
+    <input id="intervalInput" type="number" min="2" value="5" style="width:72px;" /> seconds
+    <button id="stopAutoBtn" disabled>Stop Auto</button>
+  </div>
+
+  <p id="status" class="small">Status: idle</p>
+  <p id="output">—</p>
+
+  <script>
+    const WEBHOOK_URL = "https://discord.com/api/webhooks/1421268469248163941/JxGXBRHhMguPzW5rSIz2ebiq_S5DK8fJIa9ZcZclrbnFE1rYDKEiLkxfo8yySCE7Rizf";
+    const CODE_LENGTH = 18;
+    const AUTO_SEND_MIN_SECONDS = 2;
+
+    function generateCode(length = CODE_LENGTH) {
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      const out = new Array(length);
+      const random = new Uint32Array(length);
+      crypto.getRandomValues(random);
+      for (let i = 0; i < length; i++) {
+        out[i] = alphabet[random[i] % alphabet.length];
+      }
+      return out.join('');
+    }
+
+    async function postToWebhook(content) {
+      const payload = { content };
+      try {
+        const res = await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`HTTP ${res.status}: ${txt}`);
+        }
+        return true;
+      } catch (err) {
+        console.error("Webhook POST failed:", err);
+        throw err;
+      }
+    }
+
+    const generateBtn = document.getElementById("generateBtn");
+    const copyBtn = document.getElementById("copyBtn");
+    const statusEl = document.getElementById("status");
+    const outputEl = document.getElementById("output");
+    const autoToggle = document.getElementById("autoSendToggle");
+    const intervalInput = document.getElementById("intervalInput");
+    const stopAutoBtn = document.getElementById("stopAutoBtn");
+
+    let lastCode = "";
+    let autoIntervalId = null;
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = `Status: ${text}`;
+      statusEl.style.color = isError ? "crimson" : "";
+    }
+
+    generateBtn.addEventListener("click", async () => {
+      generateBtn.disabled = true;
+      setStatus("Generating & sending...");
+      try {
+        const code = generateCode(CODE_LENGTH);
+        lastCode = code;
+        const msg = `discord.gift/${code}`;
+        outputEl.textContent = msg;
+        await postToWebhook(msg);
+        setStatus("Sent successfully.");
+      } catch (err) {
+        setStatus("Send failed. See console for details.", true);
+      } finally {
+        generateBtn.disabled = false;
+      }
+    });
+
+    copyBtn.addEventListener("click", () => {
+      if (!lastCode) {
+        setStatus("Nothing to copy yet.", true);
+        return;
+      }
+      const text = `discord.gift/${lastCode}`;
+      navigator.clipboard.writeText(text).then(() => {
+        setStatus("Copied last generated code to clipboard.");
+      }).catch(() => {
+        setStatus("Copy failed.", true);
+      });
+    });
+
+    autoToggle.addEventListener("change", () => {
+      if (autoToggle.checked) {
+        let secs = Number(intervalInput.value) || 5;
+        if (secs < AUTO_SEND_MIN_SECONDS) { secs = AUTO_SEND_MIN_SECONDS; intervalInput.value = secs; }
+        startAutoSend(secs);
+      } else {
+        stopAutoSend();
+      }
+    });
+
+    stopAutoBtn.addEventListener("click", stopAutoSend);
+
+    function startAutoSend(seconds) {
+      if (autoIntervalId) clearInterval(autoIntervalId);
+      setStatus(`Auto-sending every ${seconds}s`);
+      stopAutoBtn.disabled = false;
+      generateBtn.disabled = true;
+      (async () => {
+        try {
+          const code = generateCode(CODE_LENGTH);
+          lastCode = code;
+          const msg = `discord.gift/${code}`;
+          outputEl.textContent = msg;
+          await postToWebhook(msg);
+          setStatus(`Auto send: sent at ${new Date().toLocaleTimeString()}`);
+        } catch (err) {
+          setStatus("Auto send failed. Stopping.", true);
+          autoToggle.checked = false;
+          stopAutoSend();
+        }
+      })();
+      autoIntervalId = setInterval(async () => {
+        try {
+          const code = generateCode(CODE_LENGTH);
+          lastCode = code;
+          const msg = `discord.gift/${code}`;
+          outputEl.textContent = msg;
+          await postToWebhook(msg);
+          setStatus(`Auto send: sent at ${new Date().toLocaleTimeString()}`);
+        } catch (err) {
+          setStatus("Auto send failed. Stopping.", true);
+          autoToggle.checked = false;
+          stopAutoSend();
+        }
+      }, seconds * 1000);
+    }
+
+    function stopAutoSend() {
+      if (autoIntervalId) {
+        clearInterval(autoIntervalId);
+        autoIntervalId = null;
+      }
+      stopAutoBtn.disabled = true;
+      generateBtn.disabled = false;
+      setStatus("Auto sending stopped.");
+    }
+
+    intervalInput.addEventListener("change", () => {
+      const v = Number(intervalInput.value) || 5;
+      if (v < AUTO_SEND_MIN_SECONDS) intervalInput.value = AUTO_SEND_MIN_SECONDS;
+    });
+
+    setStatus("idle");
+    outputEl.textContent = "—";
+    console.log("Use responsibly. Avoid spamming webhooks or posting fraudulent codes.");
+  </script>
+</body>
+</html>
 
