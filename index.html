@@ -1,186 +1,167 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
+<meta charset="UTF-8">
 <title>Discord Gift Sender</title>
 <style>
-  body { font-family: Arial, sans-serif; padding: 24px; max-width: 720px; }
-  button, input { font-size: 1rem; padding: 8px 12px; margin: 6px 0; }
-  #output { margin-top: 12px; font-weight: 600; word-break: break-all; }
-  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  label { display:flex; gap:8px; align-items:center; }
-  .small { font-size:0.9rem; color:#555; }
+body { font-family: Arial, sans-serif; padding: 24px; max-width: 720px; }
+button, input { font-size: 1rem; padding: 8px 12px; margin: 6px 0; }
+#output { margin-top: 12px; font-weight: 600; word-break: break-all; }
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+label { display:flex; gap:8px; align-items:center; }
+.small { font-size:0.9rem; color:#555; }
+#console { margin-top: 12px; padding: 12px; height: 200px; overflow-y: auto; background: #111; color: #0f0; font-family: monospace; font-size: 0.85rem; border-radius: 6px; }
 </style>
 </head>
 <body>
-  <h2>Generate random 18-character code and send to Discord webhook</h2>
+<h2>Generate random 18-character code and send to Discord webhook</h2>
 
-  <div class="controls">
-    <button id="generateBtn">Generate & Send</button>
-    <button id="copyBtn">Copy Last</button>
+<div class="controls">
+<button id="generateBtn">Generate & Send</button>
+<button id="copyBtn">Copy Last</button>
 
-    <label>
-      <input type="checkbox" id="autoSendToggle" />
-      Auto-send every
-    </label>
+<label>
+<input type="checkbox" id="autoSendToggle" />
+Auto-send every
+</label>
 
-    <!-- min is 0.01 seconds (10 ms), step allows fractional seconds -->
-    <input id="intervalInput" type="number" min="0.01" value="0.01" step="0.01" style="width:80px;" /> seconds
+<input id="intervalInput" type="number" min="0.01" value="0.01" step="0.01" style="width:80px;" /> seconds
+<button id="stopAutoBtn" disabled>Stop Auto</button>
+</div>
 
-    <button id="stopAutoBtn" disabled>Stop Auto</button>
-  </div>
+<p id="status" class="small">Status: idle</p>
+<p id="output">—</p>
+<div id="console"></div>
 
-  <p id="status" class="small">Status: idle</p>
-  <p id="output">—</p>
+<script>
+const CODE_LENGTH = 18;
+const AUTO_SEND_MIN_SECONDS = 0.01;
 
-  <script>
-    // === CONFIG ===
-    const CODE_LENGTH = 18;
-    // Minimum allowed interval in seconds (0.01s = 10 ms)
-    const AUTO_SEND_MIN_SECONDS = 0.01;
+function generateCode(length = CODE_LENGTH) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const out = new Array(length);
+  const random = new Uint32Array(length);
+  crypto.getRandomValues(random);
+  for (let i = 0; i < length; i++) out[i] = alphabet[random[i] % alphabet.length];
+  return out.join('');
+}
 
-    // === Helpers ===
-    function generateCode(length = CODE_LENGTH) {
-      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-      const out = new Array(length);
-      const random = new Uint32Array(length);
-      crypto.getRandomValues(random);
-      for (let i = 0; i < length; i++) {
-        out[i] = alphabet[random[i] % alphabet.length];
-      }
-      return out.join('');
-    }
+async function sendToProxy(message) {
+  const res = await fetch('/api/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return true;
+}
 
-    async function sendToProxy(message) {
-      // Sends to the serverless proxy at /api/send
-      const res = await fetch('/api/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      return true;
-    }
+// === UI wiring ===
+const generateBtn = document.getElementById("generateBtn");
+const copyBtn = document.getElementById("copyBtn");
+const statusEl = document.getElementById("status");
+const outputEl = document.getElementById("output");
+const autoToggle = document.getElementById("autoSendToggle");
+const intervalInput = document.getElementById("intervalInput");
+const stopAutoBtn = document.getElementById("stopAutoBtn");
+const consoleEl = document.getElementById("console");
 
-    // === UI wiring ===
-    const generateBtn = document.getElementById("generateBtn");
-    const copyBtn = document.getElementById("copyBtn");
-    const statusEl = document.getElementById("status");
-    const outputEl = document.getElementById("output");
-    const autoToggle = document.getElementById("autoSendToggle");
-    const intervalInput = document.getElementById("intervalInput");
-    const stopAutoBtn = document.getElementById("stopAutoBtn");
+let lastCode = "";
+let autoIntervalId = null;
 
-    let lastCode = "";
-    let autoIntervalId = null;
+function setStatus(text, isError=false) {
+  statusEl.textContent = `Status: ${text}`;
+  statusEl.style.color = isError ? "crimson" : "";
+}
 
-    function setStatus(text, isError = false) {
-      statusEl.textContent = `Status: ${text}`;
-      statusEl.style.color = isError ? "crimson" : "";
-    }
+function logError(text) {
+  const time = new Date().toLocaleTimeString();
+  const line = `[${time}] ${text}`;
+  consoleEl.innerHTML += line + "<br>";
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
 
-    async function generateAndSend() {
-      generateBtn.disabled = true;
-      setStatus("Generating & sending...");
-      try {
-        const code = generateCode();
-        lastCode = code;
-        const msg = `discord.gift/${code}`;
-        outputEl.textContent = msg;
-        await sendToProxy(msg);
-        setStatus("Sent successfully.");
-      } catch (err) {
-        console.error(err);
-        setStatus("Send failed. See console.", true);
-      } finally {
-        generateBtn.disabled = false;
-      }
-    }
+async function generateAndSend() {
+  generateBtn.disabled = true;
+  setStatus("Generating & sending...");
+  try {
+    const code = generateCode();
+    lastCode = code;
+    const msg = `discord.gift/${code}`;
+    outputEl.textContent = msg;
+    await sendToProxy(msg);
+    setStatus("Sent successfully.");
+  } catch(err) {
+    console.error(err);
+    logError(`Error sending: ${err.message}`);
+    setStatus("Send failed. See console.", true);
+  } finally {
+    generateBtn.disabled = false;
+  }
+}
 
-    generateBtn.addEventListener("click", generateAndSend);
+generateBtn.addEventListener("click", generateAndSend);
 
-    copyBtn.addEventListener("click", () => {
-      if (!lastCode) {
-        setStatus("Nothing to copy yet.", true);
-        return;
-      }
-      navigator.clipboard.writeText(`discord.gift/${lastCode}`)
-        .then(() => setStatus("Copied last code to clipboard."))
-        .catch(() => setStatus("Copy failed.", true));
-    });
+copyBtn.addEventListener("click", () => {
+  if (!lastCode) return setStatus("Nothing to copy yet.", true);
+  navigator.clipboard.writeText(`discord.gift/${lastCode}`)
+    .then(() => setStatus("Copied last code to clipboard."))
+    .catch(() => setStatus("Copy failed.", true));
+});
 
-    autoToggle.addEventListener("change", () => {
-      if (autoToggle.checked) {
-        let secs = Number(intervalInput.value) || 0.01;
-        if (secs < AUTO_SEND_MIN_SECONDS) { secs = AUTO_SEND_MIN_SECONDS; intervalInput.value = secs; }
-        startAutoSend(secs);
-      } else {
-        stopAutoSend();
-      }
-    });
+autoToggle.addEventListener("change", () => {
+  if (autoToggle.checked) {
+    let secs = Number(intervalInput.value) || AUTO_SEND_MIN_SECONDS;
+    if (secs < AUTO_SEND_MIN_SECONDS) { secs = AUTO_SEND_MIN_SECONDS; intervalInput.value = secs; }
+    startAutoSend(secs);
+  } else stopAutoSend();
+});
 
-    stopAutoBtn.addEventListener("click", stopAutoSend);
+stopAutoBtn.addEventListener("click", stopAutoSend);
 
-    function startAutoSend(seconds) {
-      if (autoIntervalId) clearInterval(autoIntervalId);
-      setStatus(`Auto-sending every ${seconds}s`);
-      stopAutoBtn.disabled = false;
-      generateBtn.disabled = true;
+function startAutoSend(seconds) {
+  if (autoIntervalId) clearInterval(autoIntervalId);
+  setStatus(`Auto-sending every ${seconds}s`);
+  stopAutoBtn.disabled = false;
+  generateBtn.disabled = true;
 
-      // send immediately, then every interval
-      (async () => {
-        try {
-          const code = generateCode();
-          lastCode = code;
-          const msg = `discord.gift/${code}`;
-          outputEl.textContent = msg;
-          await sendToProxy(msg);
-          setStatus(`Auto send: sent at ${new Date().toLocaleTimeString()}`);
-        } catch (err) {
-          console.error(err);
-          setStatus("Auto send failed. Stopping.", true);
-          autoToggle.checked = false;
-          stopAutoSend();
-        }
-      })();
+  // initial immediate send
+  (async () => {
+    const code = generateCode();
+    lastCode = code;
+    const msg = `discord.gift/${code}`;
+    outputEl.textContent = msg;
+    try { await sendToProxy(msg); } 
+    catch(err){ logError(`Error sending: ${err.message}`); }
+  })();
 
-      autoIntervalId = setInterval(async () => {
-        try {
-          const code = generateCode();
-          lastCode = code;
-          const msg = `discord.gift/${code}`;
-          outputEl.textContent = msg;
-          await sendToProxy(msg);
-          setStatus(`Auto send: sent at ${new Date().toLocaleTimeString()}`);
-        } catch (err) {
-          console.error(err);
-          setStatus("Auto send failed. Stopping.", true);
-          autoToggle.checked = false;
-          stopAutoSend();
-        }
-      }, Math.max(1, seconds * 1000)); // Math.max(1, ...) ensures setInterval gets at least 1ms (some browsers clamp lower)
-    }
+  autoIntervalId = setInterval(async () => {
+    const code = generateCode();
+    lastCode = code;
+    const msg = `discord.gift/${code}`;
+    outputEl.textContent = msg;
+    try { await sendToProxy(msg); } 
+    catch(err){ logError(`Error sending: ${err.message}`); }
+  }, Math.max(1, seconds * 1000));
+}
 
-    function stopAutoSend() {
-      if (autoIntervalId) {
-        clearInterval(autoIntervalId);
-        autoIntervalId = null;
-      }
-      stopAutoBtn.disabled = true;
-      generateBtn.disabled = false;
-      setStatus("Auto sending stopped.");
-    }
+function stopAutoSend() {
+  if (autoIntervalId) { clearInterval(autoIntervalId); autoIntervalId = null; }
+  stopAutoBtn.disabled = true;
+  generateBtn.disabled = false;
+  setStatus("Auto sending stopped.");
+}
 
-    intervalInput.addEventListener("change", () => {
-      const v = Number(intervalInput.value) || 0.01;
-      if (v < AUTO_SEND_MIN_SECONDS) intervalInput.value = AUTO_SEND_MIN_SECONDS;
-    });
+intervalInput.addEventListener("change", () => {
+  const v = Number(intervalInput.value) || AUTO_SEND_MIN_SECONDS;
+  if (v < AUTO_SEND_MIN_SECONDS) intervalInput.value = AUTO_SEND_MIN_SECONDS;
+});
 
-    // initial
-    setStatus("idle");
-    outputEl.textContent = "—";
-    console.log("Use responsibly. Avoid spamming webhooks or posting fraudulent codes.");
-  </script>
+// initial
+setStatus("idle");
+outputEl.textContent = "—";
+console.log("Use responsibly. Errors will appear in page console.");
+</script>
 </body>
 </html>
